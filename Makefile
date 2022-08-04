@@ -32,11 +32,11 @@ JEKYLL_OPTS := -d '$(SITE_DESTDIR)' $(if $(SITE_BASEURL),-b '$(SITE_BASEURL)',)
 
 VERSION := $(shell git describe --tags --dirty --always)
 
-IMAGE_REGISTRY ?= k8s.gcr.io/nfd
-IMAGE_TAG_NAME ?= $(VERSION)
+IMAGE_REGISTRY ?= lunarwhite
+IMAGE_TAG_NAME ?= readable-labels-test
 IMAGE_EXTRA_TAG_NAMES ?=
 
-IMAGE_NAME := node-feature-discovery
+IMAGE_NAME := nfd
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
 IMAGE_TAG := $(IMAGE_REPO):$(IMAGE_TAG_NAME)
 IMAGE_EXTRA_TAGS := $(foreach tag,$(IMAGE_EXTRA_TAG_NAMES),$(IMAGE_REPO):$(tag))
@@ -59,30 +59,6 @@ E2E_TEST_CONFIG ?=
 
 LDFLAGS = -ldflags "-s -w -X sigs.k8s.io/node-feature-discovery/pkg/version.version=$(VERSION) -X sigs.k8s.io/node-feature-discovery/source.pathPrefix=$(HOSTMOUNT_PREFIX)"
 
-# multi-arch build with buildx
-IMAGE_ALL_PLATFORMS ?= linux/amd64,linux/arm64
-
-# enable buildx
-ensure-buildx:
-	./hack/init-buildx.sh
-
-IMAGE_BUILDX_CMD ?= DOCKER_CLI_EXPERIMENTAL=enabled docker buildx build --platform=${IMAGE_ALL_PLATFORMS} --progress=auto --pull
-
-IMAGE_BUILD_ARGS = --build-arg VERSION=$(VERSION) \
-	    	   --build-arg HOSTMOUNT_PREFIX=$(CONTAINER_HOSTMOUNT_PREFIX) \
-	    	   --build-arg BASE_IMAGE_FULL=$(BASE_IMAGE_FULL) \
-	    	   --build-arg BASE_IMAGE_MINIMAL=$(BASE_IMAGE_MINIMAL)
-
-IMAGE_BUILD_ARGS_FULL = --target full \
-                	-t $(IMAGE_TAG) \
-	    		$(foreach tag,$(IMAGE_EXTRA_TAGS),-t $(tag)) \
-	    		$(IMAGE_BUILD_EXTRA_OPTS) ./
-
-IMAGE_BUILD_ARGS_MINIMAL = --target minimal \
-                	   -t $(IMAGE_TAG)-minimal \
-	            	   $(foreach tag,$(IMAGE_EXTRA_TAGS),-t $(tag)-minimal) \
-	            	   $(IMAGE_BUILD_EXTRA_OPTS) ./
-
 all: image
 
 build:
@@ -93,14 +69,22 @@ install:
 	$(GO_CMD) install -v $(LDFLAGS) ./cmd/...
 
 image: yamls
-	$(IMAGE_BUILD_CMD) $(IMAGE_BUILD_ARGS) $(IMAGE_BUILD_ARGS_FULL)
-	$(IMAGE_BUILD_CMD) $(IMAGE_BUILD_ARGS) $(IMAGE_BUILD_ARGS_MINIMAL)
-
-image-all: ensure-buildx yamls
-# --load : not implemented yet, see: https://github.com/docker/buildx/issues/59
-	$(IMAGE_BUILDX_CMD) $(IMAGE_BUILD_ARGS) $(IMAGE_BUILD_ARGS_FULL)
-	$(IMAGE_BUILDX_CMD) $(IMAGE_BUILD_ARGS) $(IMAGE_BUILD_ARGS_MINIMAL)
-
+	$(IMAGE_BUILD_CMD) --build-arg VERSION=$(VERSION) \
+	    --target full \
+	    --build-arg HOSTMOUNT_PREFIX=$(CONTAINER_HOSTMOUNT_PREFIX) \
+	    --build-arg BASE_IMAGE_FULL=$(BASE_IMAGE_FULL) \
+	    --build-arg BASE_IMAGE_MINIMAL=$(BASE_IMAGE_MINIMAL) \
+	    -t $(IMAGE_TAG) \
+	    $(foreach tag,$(IMAGE_EXTRA_TAGS),-t $(tag)) \
+	    $(IMAGE_BUILD_EXTRA_OPTS) ./
+	$(IMAGE_BUILD_CMD) --build-arg VERSION=$(VERSION) \
+	    --target minimal \
+	    --build-arg HOSTMOUNT_PREFIX=$(CONTAINER_HOSTMOUNT_PREFIX) \
+	    --build-arg BASE_IMAGE_FULL=$(BASE_IMAGE_FULL) \
+	    --build-arg BASE_IMAGE_MINIMAL=$(BASE_IMAGE_MINIMAL) \
+	    -t $(IMAGE_TAG)-minimal \
+	    $(foreach tag,$(IMAGE_EXTRA_TAGS),-t $(tag)-minimal) \
+	    $(IMAGE_BUILD_EXTRA_OPTS) ./
 
 # clean NFD labels on all nodes
 # devel only
@@ -181,10 +165,6 @@ push:
 	$(IMAGE_PUSH_CMD) $(IMAGE_TAG)
 	$(IMAGE_PUSH_CMD) $(IMAGE_TAG)-minimal
 	for tag in $(IMAGE_EXTRA_TAGS); do $(IMAGE_PUSH_CMD) $$tag; $(IMAGE_PUSH_CMD) $$tag-minimal; done
-
-push-all: ensure-buildx yamls
-	$(IMAGE_BUILDX_CMD) --push $(IMAGE_BUILD_ARGS) $(IMAGE_BUILD_ARGS_FULL)
-	$(IMAGE_BUILDX_CMD) --push $(IMAGE_BUILD_ARGS) $(IMAGE_BUILD_ARGS_MINIMAL)
 
 poll-images:
 	set -e; \
