@@ -21,11 +21,18 @@ import (
 	"io/ioutil"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/node-feature-discovery/pkg/api/feature"
+)
+
+// MaxLen is the maximums length showed in node labels
+const (
+	vendorMaxLen = 10
+	deviceMaxLen = 33
 )
 
 var devAttrs = []string{"class", "vendor", "device", "serial"}
@@ -37,6 +44,19 @@ var devAttrFileMap = map[string]string{
 	"device": "idProduct",
 	"vendor": "idVendor",
 	"serial": "serial",
+}
+
+// HiddenSuffixVendor is a list of meaningless vendor suffixes
+var hiddenSuffixVendor = []string{
+	"Corporation", "Corp.", "Corp.,", "Corp", "corp.", "Co.", "Co", "co.", "co.,", "CO.,", "Co.,", "Co.,Ltd", "Co.,LTD.", "Co.,Ltd.",
+	"INC.", "INC", "Inc.", "Inc", "Inc,", "inc.",
+	"Ltd.", "Ltd", "LTD.", "ltd.",
+	"Technologies", "Technologies,", "Technology", "Technology,",
+	"Information",
+	"Electronics", "ELECTRONICS ", "Electric", "ELECTRIC",
+	"Company",
+	"Group",
+	"LLC", "LLC.",
 }
 
 func readSingleUsbSysfsAttribute(path string) (string, error) {
@@ -125,4 +145,81 @@ func detectUsb() ([]feature.InstanceFeature, error) {
 	}
 
 	return devInfo, nil
+}
+
+// Get usb-oriented human-readable vendor name
+func getReadableVendor(s string) string {
+	vendorSplitList := strings.Fields(s)
+	if len(vendorSplitList) == 0 {
+		return ""
+	}
+	
+	vendorLastItem := vendorSplitList[len(vendorSplitList)-1]
+	vendorSplitList[0] = strings.Trim(vendorSplitList[0], ".,?[]()")
+
+	var vendorResult string
+	if vendorLastItem == "ID)" {
+		vendorResult = "Wrong-ID"
+	} else if len(vendorSplitList[0]) > vendorMaxLen {
+		vendorResult = vendorSplitList[0][:vendorMaxLen]
+	} else if len(vendorSplitList) == 1 || inArray(vendorSplitList[1], hiddenSuffixVendor) {
+		vendorResult = vendorSplitList[0]
+	} else {
+		vendorSplitList[1] = strings.Trim(vendorSplitList[1], ".,?[]()")
+		vendorPreResult := vendorSplitList[0] + "-" + vendorSplitList[1]
+
+		if len(vendorPreResult) > vendorMaxLen {
+			vendorResult = vendorPreResult[:vendorMaxLen]
+		} else {
+			vendorResult = vendorPreResult
+		}
+	}
+
+	vendorResult = strings.Trim(vendorResult, "-/&+")
+	vendorResult = strings.Replace(vendorResult, "/", "-", -1)
+	vendorResult = strings.Replace(vendorResult, ".", "", -1)
+	return vendorResult
+}
+
+// Get usb-oriented human-readable device name
+func getReadableDevice(s string) string {
+	deviceSplitList := strings.Fields(s)
+	if len(deviceSplitList) == 0 {
+		return ""
+	}
+
+	resultsDevice := ""
+	for _, device := range deviceSplitList {
+		device = strings.Trim(device, "-/&*+[]()~.,#®\"")
+		if len(device) != 0 {
+			resultsDevice += device + "-"
+		}
+	}
+
+	if len(resultsDevice) > deviceMaxLen {
+		resultsDevice = resultsDevice[:deviceMaxLen-1]
+	}
+
+	resultsDevice = strings.Replace(resultsDevice, "/", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, "&", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, "*", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, "+", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, "^", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, "\\", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, "(", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, ")", "-", -1)
+	resultsDevice = strings.Trim(resultsDevice, "-")
+
+	return resultsDevice
+}
+
+// Find target string in a given array
+func inArray(target string, strArray []string) bool {
+	sort.Strings(strArray)
+	index := sort.SearchStrings(strArray, target)
+
+	if index < len(strArray) && strArray[index] == target {
+		return true
+	}
+	return false
 }
