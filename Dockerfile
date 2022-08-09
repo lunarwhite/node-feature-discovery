@@ -31,6 +31,18 @@ RUN make test
 # Create full variant of the production image
 FROM ${BASE_IMAGE_FULL} as full
 
+# Install usbutils and make
+RUN apt-get update \
+    && apt-get install git make autoconf automake libtool pkg-config libudev-dev libusb-1.0-0-dev -y \
+    && git clone https://github.com/lunarwhite/usbutils.git \
+    && cd usbutils/ \
+    && git submodule init \
+    && git submodule update \
+    && autoreconf --install --symlink \
+    && ./configure --disable-dependency-tracking \
+    && make \
+    && make install
+
 # Run as unprivileged user
 USER 65534:65534
 
