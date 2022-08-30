@@ -32,6 +32,22 @@ RUN make test
 # Create full variant of the production image
 FROM ${BASE_IMAGE_FULL} as full
 
+# Install prerequisites
+RUN apt-get update \
+    # Install pciutils and update pci.ids to the current version
+    && apt-get install wget pciutils -y \
+    && update-pciids \
+    # Install and make usbutils
+    && apt-get install git gcc make udev libudev-dev libusb-1.0-0-dev autoconf pkg-config -y \
+    && git clone https://github.com/lunarwhite/usbutils.git \
+    && cd usbutils/ \
+    && git submodule init \
+    && git submodule update \
+    && autoreconf --install --symlink \
+    && ./configure \
+    && make \
+    && make install
+
 # Run as unprivileged user
 USER 65534:65534
 
