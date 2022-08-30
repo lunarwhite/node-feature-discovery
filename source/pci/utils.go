@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -28,8 +29,39 @@ import (
 	"sigs.k8s.io/node-feature-discovery/source"
 )
 
+// MaxLen is the maximums length showed in node labels
+const (
+	classMaxLen  = 4
+	vendorMaxLen = 10
+	deviceMaxLen = 35
+)
+
 var mandatoryDevAttrs = []string{"class", "vendor", "device", "subsystem_vendor", "subsystem_device"}
-var optionalDevAttrs = []string{"sriov_totalvfs", "iommu_group/type", "iommu/intel-iommu/version"}
+var optionalDevAttrs = []string{"sriov_totalvfs"}
+
+// HiddenSuffixVendor is a list of meaningless vendor suffixes
+var hiddenSuffixVendor = []string{
+	"Corporation", "Corp.", "Corp.,", "Corp", "corp.", "Co.", "Co", "co.", "co.,", "CO.,", "Co.,", "Co.,Ltd", "Co.,LTD.", "Co.,Ltd.",
+	"INC.", "INC", "Inc.", "Inc", "Inc,", "inc.",
+	"Ltd.", "Ltd", "LTD.", "ltd.",
+	"Technologies", "Technologies,", "Technology", "Technology,",
+	"Information",
+	"Company",
+	"Group",
+	"LLC", "LLC.",
+}
+
+// HiddenSuffixDevice is a list of meaningless device suffixes
+var hiddenSuffixDevice = []string{
+	"Processor",
+	"Controller",
+	"Adapter",
+	"Integrated",
+	"Technology",
+	"Graphics",
+	"Display",
+	"PCI", "PCIe", "PCI-e", "PCI-to-PCI",
+}
 
 // Read a single PCI device attribute
 // A PCI attribute in this context, maps to the corresponding sysfs file
@@ -90,4 +122,103 @@ func detectPci() ([]feature.InstanceFeature, error) {
 	}
 
 	return devInfo, nil
+}
+
+// Get pci-oriented human-readable class name
+func getReadableClass(s string) string {
+	classSplitList := strings.Fields(s)
+	classResult := classSplitList[0]
+
+	if len(classResult) > classMaxLen {
+		classResult = classResult[:classMaxLen]
+	}
+
+	return classResult
+}
+
+// Get pci-oriented human-readable vendor name
+func getReadableVendor(s string) string {
+	vendorSplitList := strings.Fields(s)
+	if len(vendorSplitList) == 0 {
+		return ""
+	}
+
+	vendorLastItem := vendorSplitList[len(vendorSplitList)-1]
+	vendorSplitList[0] = strings.Trim(vendorSplitList[0], ".,?")
+
+	var vendorResult string
+	if vendorLastItem == "ID)" {
+		vendorResult = "Wrong-ID"
+	} else if strings.HasPrefix(vendorLastItem, "[") {
+		vendorResult = vendorLastItem[1 : len(vendorLastItem)-1]
+	} else if len(vendorSplitList[0]) > vendorMaxLen {
+		vendorResult = vendorSplitList[0][:vendorMaxLen]
+	} else if len(vendorSplitList) == 1 || inArray(vendorSplitList[1], hiddenSuffixVendor) {
+		vendorResult = vendorSplitList[0]
+	} else {
+		vendorSplitList[1] = strings.Trim(vendorSplitList[1], ".,?")
+		vendorPreResult := vendorSplitList[0] + "-" + vendorSplitList[1]
+
+		if len(vendorPreResult) > vendorMaxLen {
+			vendorResult = vendorPreResult[:vendorMaxLen]
+		} else {
+			vendorResult = vendorPreResult
+		}
+	}
+
+	vendorResult = strings.Trim(vendorResult, "-/&")
+	vendorResult = strings.Replace(vendorResult, "/", "-", -1)
+
+	return vendorResult
+}
+
+// Get pci-oriented human-readable device name
+func getReadableDevice(s string) string {
+	resultsDevice := s
+
+	startIndex := strings.Index(s, "[")
+	if startIndex != -1 {
+		endIndex := strings.Index(s, "]")
+		resultsDevice = s[startIndex+1 : endIndex]
+	}
+
+	deviceSplitList := strings.Fields(resultsDevice)
+	if len(deviceSplitList) == 0 {
+		return ""
+	}
+
+	resultsDevice = ""
+	for _, device := range deviceSplitList {
+		if !inArray(device, hiddenSuffixDevice) {
+			device = strings.Trim(device, "-/&()")
+			if len(device) != 0 {
+				resultsDevice += device + "-"
+			}
+		}
+	}
+
+	resultsDevice = strings.Replace(resultsDevice, "(", "", -1)
+	resultsDevice = strings.Replace(resultsDevice, ")", "", -1)
+
+	if len(resultsDevice) > deviceMaxLen {
+		resultsDevice = resultsDevice[:deviceMaxLen-1]
+	}
+
+	resultsDevice = strings.Replace(resultsDevice, "/", "-", -1)
+	resultsDevice = strings.Replace(resultsDevice, "&", "-", -1)
+
+	resultsDevice = strings.Trim(resultsDevice, "-")
+
+	return resultsDevice
+}
+
+// Find target string in a given array
+func inArray(target string, strArray []string) bool {
+	sort.Strings(strArray)
+	index := sort.SearchStrings(strArray, target)
+
+	if index < len(strArray) && strArray[index] == target {
+		return true
+	}
+	return false
 }

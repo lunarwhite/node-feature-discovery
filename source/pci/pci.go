@@ -18,6 +18,9 @@ package pci
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -88,6 +91,14 @@ func (s *pciSource) GetLabels() (source.FeatureLabels, error) {
 	labels := source.FeatureLabels{}
 	features := s.GetFeatures()
 
+	// Add readable labels
+	var lspci []byte
+	var err error
+	var cmd *exec.Cmd
+	var cmdArg string
+
+	attrsReadable := make(map[string]string)
+
 	// Construct a device label format, a sorted list of valid attributes
 	deviceLabelFields := make([]string, 0)
 	configLabelFields := make(map[string]struct{}, len(s.config.DeviceLabelFields))
@@ -117,16 +128,36 @@ func (s *pciSource) GetLabels() (source.FeatureLabels, error) {
 	for _, dev := range features.Instances[DeviceFeature].Elements {
 		attrs := dev.Attributes
 		class := attrs["class"]
+
 		for _, white := range s.config.DeviceClassWhitelist {
 			if strings.HasPrefix(string(class), strings.ToLower(white)) {
+				cmdArg = attrs["vendor"] + ":" + attrs["device"]
+				cmd = exec.Command("lspci", "-mm", "-d", cmdArg)
+				if lspci, err = cmd.Output(); err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+
+				rule, _ := regexp.Compile(`"([^\"]+)"`)
+				results := rule.FindAllString(string(lspci), -1)
+
+				attrsReadable["class"] = getReadableClass(strings.Trim(results[0], "\""))
+				attrsReadable["vendor"] = getReadableVendor(strings.Trim(results[1], "\""))
+				attrsReadable["device"] = getReadableDevice(strings.Trim(results[2], "\""))
+
 				devLabel := ""
+				devLabelReadable := ""
 				for i, attr := range deviceLabelFields {
 					devLabel += attrs[attr]
+					devLabelReadable += attrsReadable[attr]
+
 					if i < len(deviceLabelFields)-1 {
 						devLabel += "_"
+						devLabelReadable += "_"
 					}
 				}
 				labels[devLabel+".present"] = true
+				labels[devLabelReadable+".present"] = true
 
 				if _, ok := attrs["sriov_totalvfs"]; ok {
 					labels[devLabel+".sriov.capable"] = true
