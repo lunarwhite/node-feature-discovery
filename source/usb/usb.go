@@ -18,6 +18,9 @@ package usb
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -33,8 +36,9 @@ const Name = "usb"
 const DeviceFeature = "device"
 
 type Config struct {
-	DeviceClassWhitelist []string `json:"deviceClassWhitelist,omitempty"`
-	DeviceLabelFields    []string `json:"deviceLabelFields,omitempty"`
+	DeviceClassWhitelist     []string          `json:"deviceClassWhitelist,omitempty"`
+	DeviceClassWhitelistName map[string]string `json:"deviceClassWhitelistName,omitempty"`
+	DeviceLabelFields        []string          `json:"deviceLabelFields,omitempty"`
 }
 
 // newDefaultConfig returns a new config with pre-populated defaults
@@ -44,7 +48,13 @@ func newDefaultConfig() *Config {
 		// By default these include classes where different accelerators are typically mapped:
 		// Video (0e), Miscellaneous (ef), Application Specific (fe), and Vendor Specific (ff).
 		DeviceClassWhitelist: []string{"0e", "ef", "fe", "ff"},
-		DeviceLabelFields:    defaultDeviceLabelFields(),
+		DeviceClassWhitelistName: map[string]string{
+			"0e": "Video",
+			"ef": "Misc",
+			"fe": "App",
+			"ff": "Vendor",
+		},
+		DeviceLabelFields: defaultDeviceLabelFields(),
 	}
 }
 
@@ -91,6 +101,14 @@ func (s *usbSource) GetLabels() (source.FeatureLabels, error) {
 	labels := source.FeatureLabels{}
 	features := s.GetFeatures()
 
+	// Add readable labels
+	var lsusb []byte
+	var err error
+	var cmd *exec.Cmd
+	var cmdArg string
+
+	attrsReadable := make(map[string]string)
+
 	// Construct a device label format, a sorted list of valid attributes
 	deviceLabelFields := []string{}
 	configLabelFields := map[string]bool{}
@@ -120,16 +138,42 @@ func (s *usbSource) GetLabels() (source.FeatureLabels, error) {
 	for _, dev := range features.Instances[DeviceFeature].Elements {
 		attrs := dev.Attributes
 		class := attrs["class"]
+
 		for _, white := range s.config.DeviceClassWhitelist {
 			if strings.HasPrefix(string(class), strings.ToLower(white)) {
+
+				cmdArg = attrs["vendor"] + ":" + attrs["device"]
+				cmd = exec.Command("lsusb", "-d", cmdArg)
+				if lsusb, err = cmd.Output(); err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+
+				fmt.Println("lsusb:", string(lsusb)) // log
+
+				rule, _ := regexp.Compile(`{(.*?)}`)
+				results := rule.FindAllString(string(lsusb), -1)
+
+				fmt.Println("result:", results) // log
+
+				attrsReadable["class"] = s.config.DeviceClassWhitelistName[class]
+				attrsReadable["vendor"] = getReadableVendor(strings.Trim(results[0], "{}"))
+				attrsReadable["device"] = getReadableDevice(strings.Trim(results[1], "{}"))
+
 				devLabel := ""
+				devLabelReadable := ""
+
 				for i, attr := range deviceLabelFields {
 					devLabel += attrs[attr]
+					devLabelReadable += attrsReadable[attr]
+
 					if i < len(deviceLabelFields)-1 {
 						devLabel += "_"
+						devLabelReadable += "_"
 					}
 				}
 				labels[devLabel+".present"] = true
+				labels[devLabelReadable+".present"] = true
 				break
 			}
 		}
